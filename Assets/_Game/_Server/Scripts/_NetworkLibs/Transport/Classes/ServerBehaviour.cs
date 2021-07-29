@@ -104,7 +104,7 @@ public class ServerBehaviour : MonoBehaviour
                 }
                 else if (cmd == NetworkEvent.Type.Disconnect)
                 {
-                    Debug.Log("Client disconnected from server");
+                    Debug.Log("Client disconnected from server: ");
                     connections[i] = default(NetworkConnection);
                     lastKeepAlives[i] = 0f;
                 }
