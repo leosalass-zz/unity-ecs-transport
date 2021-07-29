@@ -1,74 +1,130 @@
 using UnityEngine;
-using UnityEngine.Assertions;
-
-using Unity.Collections;
 using Unity.Networking.Transport;
+using Unity.Collections;
 
 public class ServerBehaviour : MonoBehaviour
 {
-    public NetworkDriver m_Driver;
-    private NativeList<NetworkConnection> m_Connections;
+    public NetworkDriver driver;
+    protected NativeList<NetworkConnection> connections;
+    private NativeList<float> lastKeepAlives;
+    private int sendKeepAliveDelay;
 
-    void Start()
+    private int maximunConnections;
+
+    private void Start()
     {
-        m_Driver = NetworkDriver.Create();
-        var endpoint = NetworkEndPoint.AnyIpv4;
-        endpoint.Port = 9000;
-        if (m_Driver.Bind(endpoint) != 0)
-            Debug.Log("Failed to bind to port 9000");
-        else
-            m_Driver.Listen();
+        driver = NetworkDriver.Create();
 
-        m_Connections = new NativeList<NetworkConnection>(16, Allocator.Persistent);
-    }
+        /**
+         * who can connect to us?
+         */
+        NetworkEndPoint endPoint = NetworkEndPoint.AnyIpv4;
+        endPoint.Port = 5522;
 
-    public void OnDestroy()
-    {
-        m_Driver.Dispose();
-        m_Connections.Dispose();
-    }
-
-    void Update()
-    {
-        m_Driver.ScheduleUpdate().Complete();
-
-        // CleanUpConnections
-        for (int i = 0; i < m_Connections.Length; i++)
+        if (isPortAvailable(driver, endPoint))
         {
-            if (!m_Connections[i].IsCreated)
+            driver.Listen();
+            if (driver.Listening)
             {
-                m_Connections.RemoveAtSwapBack(i);
+                Debug.Log("Listening for connections");
+            }
+        }
+
+        sendKeepAliveDelay = 5;
+
+        maximunConnections = 10;
+        connections = new NativeList<NetworkConnection>(maximunConnections, Allocator.Persistent);
+        lastKeepAlives = new NativeList<float>(maximunConnections, Allocator.Persistent);
+
+    }
+
+    private bool isPortAvailable(NetworkDriver driver, NetworkEndPoint endPoint)
+    {
+        bool isOpen = (driver.Bind(endPoint) != 0) ? false : true;
+
+        if (!isOpen)
+        {
+            Debug.Log("There was an error binding to port " + endPoint.Port);
+        }
+
+        return isOpen;
+    }
+
+    private void OnDestroy()
+    {
+        driver.Dispose();
+        connections.Dispose();
+    }
+
+    private void Update()
+    {
+        driver.ScheduleUpdate().Complete();
+        CleanupConnections();
+        AcceptNewConnections();
+        UpdateMessagePump();
+        KeepAlive();
+    }
+
+    private void CleanupConnections()
+    {
+        for (int i = 0; i < connections.Length; i++)
+        {
+            if (!connections[i].IsCreated)
+            {
+                connections.RemoveAtSwapBack(i);
                 --i;
             }
         }
-        // AcceptNewConnections
+    }
+
+    private void AcceptNewConnections()
+    {
         NetworkConnection c;
-        while ((c = m_Driver.Accept()) != default(NetworkConnection))
+        while ((c = driver.Accept()) != default(NetworkConnection))
         {
-            m_Connections.Add(c);
+            connections.Add(c);
+            lastKeepAlives.Add(Time.timeSinceLevelLoad);
             Debug.Log("Accepted a connection");
         }
+    }
 
+    private void UpdateMessagePump()
+    {
         DataStreamReader stream;
-        for (int i = 0; i < m_Connections.Length; i++)
+        for (int i = 0; i < connections.Length; i++)
         {
-            Assert.IsTrue(m_Connections[i].IsCreated);
-
             NetworkEvent.Type cmd;
-            while ((cmd = m_Driver.PopEventForConnection(m_Connections[i], out stream)) != NetworkEvent.Type.Empty)
+            while ((cmd = driver.PopEventForConnection(connections[i], out stream)) != NetworkEvent.Type.Empty)
             {
                 if (cmd == NetworkEvent.Type.Data)
                 {
                     uint number = stream.ReadUInt();
 
-                    Debug.Log("Got " + number + " from the Client adding + 2 to it.");
-                    number += 2;
+                    Debug.Log("Got " + number + " from the Client, " + Time.timeSinceLevelLoad);
                 }
                 else if (cmd == NetworkEvent.Type.Disconnect)
                 {
                     Debug.Log("Client disconnected from server");
-                    m_Connections[i] = default(NetworkConnection);
+                    connections[i] = default(NetworkConnection);
+                    lastKeepAlives[i] = 0f;
                 }
+            }
+        }
+    }
+
+    private void KeepAlive()
+    {
+        float currentTime = Time.timeSinceLevelLoad;
+        for (int i = 0; i < connections.Length; i++)
+        {
+            if (lastKeepAlives[i] + sendKeepAliveDelay <= currentTime)
+            {
+                DataStreamWriter writer;
+                driver.BeginSend(connections[i], out writer);
+                writer.WriteInt(1);
+                driver.EndSend(writer);
+
+                lastKeepAlives[i] = currentTime;
             }
         }
     }
