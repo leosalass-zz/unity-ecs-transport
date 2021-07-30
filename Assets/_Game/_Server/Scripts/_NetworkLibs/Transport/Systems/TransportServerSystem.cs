@@ -5,6 +5,8 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Collections;
 using Unity.Networking.Transport;
+using System.IO;
+using System.Reflection;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
 public class TransportServerSystem : SystemBase
@@ -22,7 +24,7 @@ public class TransportServerSystem : SystemBase
         NetworkEndPoint endPoint = NetworkEndPoint.AnyIpv4;
         endPoint.Port = 5522;
 
-        if (isPortAvailable(driver, endPoint))
+        if (IsPortAvailable(driver, endPoint))
         {
             driver.Listen();
             if (driver.Listening)
@@ -53,7 +55,7 @@ public class TransportServerSystem : SystemBase
 
         float currentTime = (float)Time.ElapsedTime;
 
-        var connectionJob = new ServerUpdateConnectionsJob
+        var serverUpdateMessagePumpJob = new ServerUpdateMessagePumpJob
         {
             driver = driver,
             connections = connections,
@@ -61,7 +63,7 @@ public class TransportServerSystem : SystemBase
             currentTime = currentTime
         };
 
-        var serverUpdateJob = new ServerUpdateMessagePumpJob
+        var serverKeepAliveJob = new ServerKeepAliveJob
         {
             driver = driver.ToConcurrent(),
             connections = connections.AsDeferredJobArray(),
@@ -71,11 +73,11 @@ public class TransportServerSystem : SystemBase
         };
 
         ServerJobHandle = driver.ScheduleUpdate();
-        ServerJobHandle = connectionJob.Schedule(ServerJobHandle);
-        ServerJobHandle = serverUpdateJob.Schedule(connections, 1, ServerJobHandle);
+        ServerJobHandle = serverUpdateMessagePumpJob.Schedule(ServerJobHandle);
+        ServerJobHandle = serverKeepAliveJob.Schedule(connections, 1, ServerJobHandle);
     }
 
-    private bool isPortAvailable(NetworkDriver driver, NetworkEndPoint endPoint)
+    private bool IsPortAvailable(NetworkDriver driver, NetworkEndPoint endPoint)
     {
         bool isOpen = (driver.Bind(endPoint) != 0) ? false : true;
 
@@ -88,7 +90,7 @@ public class TransportServerSystem : SystemBase
     }
 }
 
-struct ServerUpdateConnectionsJob : IJob
+struct ServerUpdateMessagePumpJob : IJob
 {
     public NetworkDriver driver;
     public NativeList<NetworkConnection> connections;
@@ -97,7 +99,12 @@ struct ServerUpdateConnectionsJob : IJob
 
     public void Execute()
     {
-        // CleanUpConnections
+        CleanUpConnections();
+        AcceptNewConnections();
+    }
+
+    void CleanUpConnections()
+    {
         for (int i = 0; i < connections.Length; i++)
         {
             if (!connections[i].IsCreated)
@@ -107,7 +114,10 @@ struct ServerUpdateConnectionsJob : IJob
                 --i;
             }
         }
-        // AcceptNewConnections
+    }
+
+    void AcceptNewConnections()
+    {
         NetworkConnection c;
         while ((c = driver.Accept()) != default(NetworkConnection))
         {
@@ -118,7 +128,7 @@ struct ServerUpdateConnectionsJob : IJob
     }
 }
 
-struct ServerUpdateMessagePumpJob : IJobParallelForDefer
+struct ServerKeepAliveJob : IJobParallelForDefer
 {
     // Start querying the driver for events
     // that might have happened since the last update(tick).
@@ -135,26 +145,39 @@ struct ServerUpdateMessagePumpJob : IJobParallelForDefer
         //This will be used in case any Data event was received.
         //Then we just start looping through all our connections.
         DataStreamReader stream;
-        Assert.IsTrue(connections[index].IsCreated);
-
         NetworkEvent.Type cmd;
+
+        Assert.IsTrue(connections[index].IsCreated);
         while ((cmd = driver.PopEventForConnection(connections[index], out stream)) != NetworkEvent.Type.Empty)
         {
             if (cmd == NetworkEvent.Type.Data)
             {
-                byte messageCode = stream.ReadByte();
-
-                Debug.Log("Got " + messageCode + " as message code.");
+                Receive(stream);
             }
             else if (cmd == NetworkEvent.Type.Disconnect)
             {
-                Debug.Log("Client disconnected from server");
-                connections[index] = default(NetworkConnection);
-                lastKeepAlives[index] = 0;
+                Disconnect(index);
             }
         }
 
-        //keepAlive
+        KeepAlive();
+    }
+
+    void Receive(DataStreamReader stream)
+    {
+        byte messageCode = stream.ReadByte();
+        Debug.Log("Got " + messageCode + " as message code.");
+    }
+
+    void Disconnect(int index)
+    {
+        Debug.Log("Client disconnected from server");
+        connections[index] = default(NetworkConnection);
+        lastKeepAlives[index] = 0;
+    }
+
+    void KeepAlive()
+    {
         for (int i = 0; i < connections.Length; i++)
         {
             if (lastKeepAlives[i] + keepAliveDelay <= currentTime)
