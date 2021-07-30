@@ -71,6 +71,13 @@ namespace Server
                 driver = driver.ToConcurrent(),
                 connections = connections.AsDeferredJobArray(),
                 lastKeepAlives = lastKeepAlives.AsDeferredJobArray(),
+            };
+
+            var keepAliveJob = new KeepAliveJob
+            {
+                driver = driver.ToConcurrent(),
+                connections = connections.AsDeferredJobArray(),
+                lastKeepAlives = lastKeepAlives.AsDeferredJobArray(),
                 keepAliveDelay = keepAliveDelay,
                 currentTime = currentTime
             };
@@ -78,6 +85,7 @@ namespace Server
             ServerJobHandle = driver.ScheduleUpdate();
             ServerJobHandle = updateConnectionsJob.Schedule(ServerJobHandle);
             ServerJobHandle = updateMessagePumpJump.Schedule(connections, 1, ServerJobHandle);
+            ServerJobHandle = keepAliveJob.Schedule(connections, 1, ServerJobHandle);
         }
 
         private bool IsPortAvailable(NetworkDriver driver, NetworkEndPoint endPoint)
@@ -139,8 +147,6 @@ namespace Server
         public NetworkDriver.Concurrent driver;
         public NativeArray<NetworkConnection> connections;
         public NativeArray<float> lastKeepAlives;
-        public int keepAliveDelay;
-        public float currentTime;
 
         public void Execute(int index)
         {
@@ -155,21 +161,25 @@ namespace Server
             {
                 if (cmd == NetworkEvent.Type.Data)
                 {
-                    NetworkMessages(stream);
+                    NetworkMessages(ref stream, index);
                 }
                 else if (cmd == NetworkEvent.Type.Disconnect)
                 {
                     Disconnect(index);
                 }
             }
-
-            KeepAlive();
         }
 
-        void NetworkMessages(DataStreamReader stream)
+        void NetworkMessages(ref DataStreamReader stream, int index)
         {
-            byte messageCode = stream.ReadByte();
-            Debug.Log("Got " + messageCode + " as message code.");
+            byte networkMessageCode = stream.ReadByte();
+
+            switch (networkMessageCode)
+            {
+                case (byte)NetworkMessageCode.KeepAlive:
+                    Debug.Log("CLIENT " + connections[index].InternalId + " IS ALIVE");
+                    break;
+            }
         }
 
         void Disconnect(int index)
@@ -178,20 +188,39 @@ namespace Server
             connections[index] = default(NetworkConnection);
             lastKeepAlives[index] = 0;
         }
+    }
 
-        void KeepAlive()
+    struct KeepAliveJob : IJobParallelForDefer
+    {
+        public NetworkDriver.Concurrent driver;
+        public NativeArray<NetworkConnection> connections;
+        public NativeArray<float> lastKeepAlives;
+        public int keepAliveDelay;
+        public float currentTime;
+        public byte done;
+
+        public void Execute(int index)
         {
-            for (int i = 0; i < connections.Length; i++)
+            if (!connections[index].IsCreated)
             {
-                if (lastKeepAlives[i] + keepAliveDelay <= currentTime)
-                {
-                    DataStreamWriter writer;
-                    driver.BeginSend(connections[i], out writer);
-                    writer.WriteInt(1);
-                    driver.EndSend(writer);
+                if (done != 1)
+                    Debug.Log("Something went wrong during connect, IsCreated: " + connections[index].IsCreated + " done: " + done);
+                return;
+            }
 
-                    lastKeepAlives[i] = currentTime;
-                }
+            keepAlive(index);
+        }
+
+        void keepAlive(int index)
+        {
+            if (lastKeepAlives[index] + keepAliveDelay <= currentTime)
+            {
+                lastKeepAlives[0] = currentTime;
+
+                DataStreamWriter writer;
+                driver.BeginSend(connections[index], out writer);
+                writer.WriteByte(1);
+                driver.EndSend(writer);
             }
         }
     }

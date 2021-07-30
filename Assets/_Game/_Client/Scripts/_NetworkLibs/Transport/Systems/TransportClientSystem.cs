@@ -127,7 +127,6 @@ namespace Client
         void NetworkMessages(ref DataStreamReader stream)
         {
             byte networkMessageCode = stream.ReadByte();
-            Debug.Log("Got the value = " + networkMessageCode + " back  from the server");
 
             switch (networkMessageCode)
             {
@@ -165,7 +164,6 @@ namespace Client
             if (lastKeepAlive[0] + keepAliveDelay <= currentTime)
             {
                 lastKeepAlive[0] = currentTime;
-                Debug.Log(currentTime);
 
                 DataStreamWriter writer;
                 driver.BeginSend(server, out writer);
