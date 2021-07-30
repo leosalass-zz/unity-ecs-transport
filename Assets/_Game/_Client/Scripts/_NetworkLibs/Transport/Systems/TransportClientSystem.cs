@@ -54,17 +54,25 @@ public class TransportClientSystem : SystemBase
     {
         ClientJobHandle.Complete();
 
-        var job = new ClientUpdateMessagePumpJob
+        var clientUpdateMessagePumpJob = new ClientUpdateMessagePumpJob
+        {
+            driver = driver,
+            server = server,
+            done = done
+        };
+
+        var keepAliveJob = new KeepAliveJob
         {
             driver = driver,
             server = server,
             lastKeepAlive = lastKeepAlive,
             keepAliveDelay = keepAliveDelay,
-            currentTime = (float)Time.ElapsedTime,
-            done = done
+            currentTime = (float)Time.ElapsedTime
         };
+
         ClientJobHandle = driver.ScheduleUpdate();
-        ClientJobHandle = job.Schedule(ClientJobHandle);
+        ClientJobHandle = clientUpdateMessagePumpJob.Schedule(ClientJobHandle);
+        ClientJobHandle = keepAliveJob.Schedule(ClientJobHandle);
     }
 }
 
@@ -72,9 +80,6 @@ struct ClientUpdateMessagePumpJob : IJob
 {
     public NetworkDriver driver;
     public NetworkConnection server;
-    public NativeList<float> lastKeepAlive;
-    public int keepAliveDelay;
-    public float currentTime;
     public byte done;
 
     public void Execute()
@@ -103,11 +108,7 @@ struct ClientUpdateMessagePumpJob : IJob
             {
                 disconnected();
             }
-        }
-
-
-        keepAlive();
-        
+        }        
     }
 
     void connected()
@@ -129,22 +130,45 @@ struct ClientUpdateMessagePumpJob : IJob
         switch (networkMessageCode)
         {
             case (byte)NetworkMessageCode.KeepAlive:
-                Debug.Log("CLIENT IS ALIVE");
+                Debug.Log("SERVER IS ALIVE");
                 break;
-        }
-    }
-
-    void keepAlive() {
-        if (lastKeepAlive[0] + keepAliveDelay <= currentTime)
-        {
-            lastKeepAlive[0] = currentTime;
-
-            DataStreamWriter writer;
-            driver.BeginSend(server, out writer);
-            writer.WriteInt(1);
-            driver.EndSend(writer);
-
         }
     }
 }
 
+
+struct KeepAliveJob : IJob
+{
+    public NetworkDriver driver;
+    public NetworkConnection server;
+    public NativeList<float> lastKeepAlive;
+    public int keepAliveDelay;
+    public float currentTime;
+    public byte done;
+
+    public void Execute()
+    {
+        if (!server.IsCreated)
+        {
+            if (done != 1)
+                Debug.Log("Something went wrong during connect, IsCreated: " + server.IsCreated + " done: " + done);
+            return;
+        }
+
+        keepAlive();
+    }
+
+    void keepAlive()
+    {
+        if (lastKeepAlive[0] + keepAliveDelay <= currentTime)
+        {
+            lastKeepAlive[0] = currentTime;
+            Debug.Log(currentTime);
+
+            DataStreamWriter writer;
+            driver.BeginSend(server, out writer);
+            writer.WriteByte((byte)NetworkMessageCode.KeepAlive);
+            driver.EndSend(writer);
+        }
+    }
+}
