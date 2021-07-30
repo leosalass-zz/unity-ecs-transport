@@ -61,7 +61,7 @@ public class TransportServerSystem : SystemBase
             currentTime = currentTime
         };
 
-        var serverUpdateJob = new ServerUpdateJob
+        var serverUpdateJob = new ServerUpdateMessagePumpJob
         {
             driver = driver.ToConcurrent(),
             connections = connections.AsDeferredJobArray(),
@@ -118,7 +118,7 @@ struct ServerUpdateConnectionsJob : IJob
     }
 }
 
-struct ServerUpdateJob : IJobParallelForDefer
+struct ServerUpdateMessagePumpJob : IJobParallelForDefer
 {
     // Start querying the driver for events
     // that might have happened since the last update(tick).

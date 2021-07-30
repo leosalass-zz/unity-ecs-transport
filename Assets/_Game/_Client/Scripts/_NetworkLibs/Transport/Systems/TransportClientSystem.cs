@@ -54,7 +54,7 @@ public class TransportClientSystem : SystemBase
     {
         ClientJobHandle.Complete();
 
-        var job = new ClientUpdateJob
+        var job = new ClientUpdateMessagePumpJob
         {
             driver = driver,
             server = server,
@@ -68,7 +68,7 @@ public class TransportClientSystem : SystemBase
     }
 }
 
-struct ClientUpdateJob : IJob
+struct ClientUpdateMessagePumpJob : IJob
 {
     public NetworkDriver driver;
     public NetworkConnection server;
@@ -93,22 +93,48 @@ struct ClientUpdateJob : IJob
         {
             if (cmd == NetworkEvent.Type.Connect)
             {
-                Debug.Log("We are now connected to the server");
+                connected();
             }
             else if (cmd == NetworkEvent.Type.Data)
             {
-                uint value = stream.ReadByte();
-                Debug.Log("Got the value = " + value + " back  from the server");
+                NetworkMessage(ref stream);
             }
             else if (cmd == NetworkEvent.Type.Disconnect)
             {
-                Debug.Log("Client got disconnected from server");
-                server = default(NetworkConnection);
+                disconnected();
             }
         }
 
 
-        //keepAlive
+        keepAlive();
+        
+    }
+
+    void connected()
+    {
+        Debug.Log("We are now connected to the server");
+    }
+
+    void disconnected()
+    {
+        Debug.Log("Client got disconnected from server");
+        server = default(NetworkConnection);
+    }
+
+    void NetworkMessage(ref DataStreamReader stream)
+    {
+        byte networkMessageCode = stream.ReadByte();
+        Debug.Log("Got the value = " + networkMessageCode + " back  from the server");
+
+        switch (networkMessageCode)
+        {
+            case (byte)NetworkMessageCode.KeepAlive:
+                Debug.Log("CLIENT IS ALIVE");
+                break;
+        }
+    }
+
+    void keepAlive() {
         if (lastKeepAlive[0] + keepAliveDelay <= currentTime)
         {
             lastKeepAlive[0] = currentTime;
