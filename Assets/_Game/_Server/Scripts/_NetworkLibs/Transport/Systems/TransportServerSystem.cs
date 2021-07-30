@@ -11,6 +11,9 @@ public class TransportServerSystem : SystemBase
 {
     public NetworkDriver driver;
     public NativeList<NetworkConnection> connections;
+    private NativeList<float> lastKeepAlives;
+    private int keepAliveDelay;
+
     private JobHandle ServerJobHandle;
 
     protected override void OnCreate()
@@ -28,8 +31,11 @@ public class TransportServerSystem : SystemBase
             }
         }
 
+        keepAliveDelay = 5;
         int maxConnections = 10;
+
         connections = new NativeList<NetworkConnection>(maxConnections, Allocator.Persistent);
+        lastKeepAlives = new NativeList<float>(maxConnections, Allocator.Persistent);
     }
 
     protected override void OnDestroy()
@@ -38,22 +44,30 @@ public class TransportServerSystem : SystemBase
         ServerJobHandle.Complete();
         driver.Dispose();
         connections.Dispose();
+        lastKeepAlives.Dispose();
     }
 
     protected override void OnUpdate()
     {
         ServerJobHandle.Complete();
 
+        float currentTime = (float)Time.ElapsedTime;
+
         var connectionJob = new ServerUpdateConnectionsJob
         {
             driver = driver,
-            connections = connections
+            connections = connections,
+            lastKeepAlives = lastKeepAlives,
+            currentTime = currentTime
         };
 
         var serverUpdateJob = new ServerUpdateJob
         {
             driver = driver.ToConcurrent(),
-            connections = connections.AsDeferredJobArray()
+            connections = connections.AsDeferredJobArray(),
+            lastKeepAlives = lastKeepAlives.AsDeferredJobArray(),
+            keepAliveDelay = keepAliveDelay,
+            currentTime = currentTime
         };
 
         ServerJobHandle = driver.ScheduleUpdate();
@@ -78,6 +92,8 @@ struct ServerUpdateConnectionsJob : IJob
 {
     public NetworkDriver driver;
     public NativeList<NetworkConnection> connections;
+    public NativeList<float> lastKeepAlives;
+    public float currentTime;
 
     public void Execute()
     {
@@ -87,6 +103,7 @@ struct ServerUpdateConnectionsJob : IJob
             if (!connections[i].IsCreated)
             {
                 connections.RemoveAtSwapBack(i);
+                lastKeepAlives.RemoveAtSwapBack(i);
                 --i;
             }
         }
@@ -95,6 +112,7 @@ struct ServerUpdateConnectionsJob : IJob
         while ((c = driver.Accept()) != default(NetworkConnection))
         {
             connections.Add(c);
+            lastKeepAlives.Add(currentTime);
             Debug.Log("Accepted a connection");
         }
     }
@@ -107,6 +125,9 @@ struct ServerUpdateJob : IJobParallelForDefer
 
     public NetworkDriver.Concurrent driver;
     public NativeArray<NetworkConnection> connections;
+    public NativeArray<float> lastKeepAlives;
+    public int keepAliveDelay;
+    public float currentTime;
 
     public void Execute(int index)
     {
@@ -118,19 +139,33 @@ struct ServerUpdateJob : IJobParallelForDefer
 
         NetworkEvent.Type cmd;
         while ((cmd = driver.PopEventForConnection(connections[index], out stream)) != NetworkEvent.Type.Empty)
-
+        {
             if (cmd == NetworkEvent.Type.Data)
             {
                 byte messageCode = stream.ReadByte();
-                FixedString128 chatMessage = stream.ReadFixedString128();
 
                 Debug.Log("Got " + messageCode + " as message code.");
-                Debug.Log("message: " + chatMessage);
             }
             else if (cmd == NetworkEvent.Type.Disconnect)
             {
                 Debug.Log("Client disconnected from server");
                 connections[index] = default(NetworkConnection);
+                lastKeepAlives[index] = 0;
             }
+        }
+
+        //keepAlive
+        for (int i = 0; i < connections.Length; i++)
+        {
+            if (lastKeepAlives[i] + keepAliveDelay <= currentTime)
+            {
+                DataStreamWriter writer;
+                driver.BeginSend(connections[i], out writer);
+                writer.WriteInt(1);
+                driver.EndSend(writer);
+
+                lastKeepAlives[i] = currentTime;
+            }
+        }
     }
 }
