@@ -5,8 +5,6 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Collections;
 using Unity.Networking.Transport;
-using System.IO;
-using System.Reflection;
 
 namespace Server
 {
@@ -16,8 +14,6 @@ namespace Server
     {
         public NetworkDriver driver;
         public NativeList<NetworkConnection> connections;
-        private NativeList<float> lastKeepAlives;
-        private int keepAliveDelay;
 
         private JobHandle ServerJobHandle;
 
@@ -32,15 +28,13 @@ namespace Server
                 driver.Listen();
                 if (driver.Listening)
                 {
-                    Debug.Log("Listening for connections");
+                    Debug.LogWarning("Listening for connections");
                 }
             }
 
-            keepAliveDelay = 5;
             int maxConnections = 10;
 
             connections = new NativeList<NetworkConnection>(maxConnections, Allocator.Persistent);
-            lastKeepAlives = new NativeList<float>(maxConnections, Allocator.Persistent);
         }
 
         protected override void OnDestroy()
@@ -49,7 +43,6 @@ namespace Server
             ServerJobHandle.Complete();
             driver.Dispose();
             connections.Dispose();
-            lastKeepAlives.Dispose();
         }
 
         protected override void OnUpdate()
@@ -62,7 +55,6 @@ namespace Server
             {
                 driver = driver,
                 connections = connections,
-                lastKeepAlives = lastKeepAlives,
                 currentTime = currentTime
             };
 
@@ -70,22 +62,11 @@ namespace Server
             {
                 driver = driver.ToConcurrent(),
                 connections = connections.AsDeferredJobArray(),
-                lastKeepAlives = lastKeepAlives.AsDeferredJobArray(),
-            };
-
-            var keepAliveJob = new KeepAliveJob
-            {
-                driver = driver.ToConcurrent(),
-                connections = connections.AsDeferredJobArray(),
-                lastKeepAlives = lastKeepAlives.AsDeferredJobArray(),
-                keepAliveDelay = keepAliveDelay,
-                currentTime = currentTime
             };
 
             ServerJobHandle = driver.ScheduleUpdate();
             ServerJobHandle = updateConnectionsJob.Schedule(ServerJobHandle);
             ServerJobHandle = updateMessagePumpJump.Schedule(connections, 1, ServerJobHandle);
-            ServerJobHandle = keepAliveJob.Schedule(connections, 1, ServerJobHandle);
         }
 
         private bool IsPortAvailable(NetworkDriver driver, NetworkEndPoint endPoint)
@@ -94,7 +75,7 @@ namespace Server
 
             if (!isOpen)
             {
-                Debug.Log("There was an error binding to port " + endPoint.Port);
+                Debug.LogWarning("There was an error binding to port " + endPoint.Port);
             }
 
             return isOpen;
@@ -105,7 +86,7 @@ namespace Server
     {
         public NetworkDriver driver;
         public NativeList<NetworkConnection> connections;
-        public NativeList<float> lastKeepAlives;
+        //public NativeList<float> lastKeepAlives;
         public float currentTime;
 
         public void Execute()
@@ -121,7 +102,7 @@ namespace Server
                 if (!connections[i].IsCreated)
                 {
                     connections.RemoveAtSwapBack(i);
-                    lastKeepAlives.RemoveAtSwapBack(i);
+                    //lastKeepAlives.RemoveAtSwapBack(i);
                     --i;
                 }
             }
@@ -130,11 +111,12 @@ namespace Server
         void AcceptNewConnections()
         {
             NetworkConnection c;
+
             while ((c = driver.Accept()) != default(NetworkConnection))
             {
                 connections.Add(c);
-                lastKeepAlives.Add(currentTime);
-                Debug.Log("Accepted a connection");
+                //lastKeepAlives.Add(currentTime);
+                Debug.LogWarning("Accepted a connection");
             }
         }
     }
@@ -146,7 +128,7 @@ namespace Server
 
         public NetworkDriver.Concurrent driver;
         public NativeArray<NetworkConnection> connections;
-        public NativeArray<float> lastKeepAlives;
+        //public NativeArray<float> lastKeepAlives;
 
         public void Execute(int index)
         {
@@ -177,51 +159,24 @@ namespace Server
             switch (networkMessageCode)
             {
                 case (byte)NetworkMessageCode.KeepAlive:
-                    Debug.Log("CLIENT " + connections[index].InternalId + " IS ALIVE");
+                    Debug.LogWarning("CLIENT " + connections[index].InternalId + " IS ALIVE");
+                    keepAlive(index);
                     break;
             }
         }
 
-        void Disconnect(int index)
-        {
-            Debug.Log("Client disconnected from server");
-            connections[index] = default(NetworkConnection);
-            lastKeepAlives[index] = 0;
-        }
-    }
-
-    struct KeepAliveJob : IJobParallelForDefer
-    {
-        public NetworkDriver.Concurrent driver;
-        public NativeArray<NetworkConnection> connections;
-        public NativeArray<float> lastKeepAlives;
-        public int keepAliveDelay;
-        public float currentTime;
-        public byte done;
-
-        public void Execute(int index)
-        {
-            if (!connections[index].IsCreated)
-            {
-                if (done != 1)
-                    Debug.Log("Something went wrong during connect, IsCreated: " + connections[index].IsCreated + " done: " + done);
-                return;
-            }
-
-            keepAlive(index);
-        }
-
         void keepAlive(int index)
         {
-            if (lastKeepAlives[index] + keepAliveDelay <= currentTime)
-            {
-                lastKeepAlives[0] = currentTime;
+            DataStreamWriter writer;
+            driver.BeginSend(connections[index], out writer);
+            writer.WriteByte(1);
+            driver.EndSend(writer);
+        }
 
-                DataStreamWriter writer;
-                driver.BeginSend(connections[index], out writer);
-                writer.WriteByte(1);
-                driver.EndSend(writer);
-            }
+        void Disconnect(int index)
+        {
+            Debug.LogWarning("Client disconnected from server");
+            connections[index] = default(NetworkConnection);
         }
     }
 }

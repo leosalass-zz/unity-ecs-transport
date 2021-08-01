@@ -7,7 +7,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Collections;
 using Unity.Networking.Transport;
-
+using Unity.Transforms;
 
 namespace Client
 {
@@ -15,13 +15,19 @@ namespace Client
     {
         public NetworkDriver driver;
         public NetworkConnection server;
-        public byte done;
+        public bool done;
 
         public JobHandle ClientJobHandle;
 
-        private NativeList<float> lastKeepAlive;
-        private int keepAliveDelay;
+        private float lastKeepAliveResponseTime;
+        private float lastKeepAliveRequestTime;
+        private float timeToSendKeepAliveRequest;
+        private float keepAliveDelay;
+        private float KeepAliveRetryDelay;
+        private float currentTime;
+        private bool waitingKeepAliveResponse;
 
+        EntitySpawner entitySpawner;
 
         protected override void OnCreate()
         {
@@ -33,74 +39,43 @@ namespace Client
             NetworkEndPoint endPoint = NetworkEndPoint.Parse(serverIp, serverPort);
 
             keepAliveDelay = 5;
-            lastKeepAlive = new NativeList<float>(1, Allocator.Persistent);
+            KeepAliveRetryDelay = 2f;
+            timeToSendKeepAliveRequest = keepAliveDelay;
 
             server = driver.Connect(endPoint);
 
-            Debug.Log("IsCreated: " + server.IsCreated);
             if (driver.IsCreated)
             {
-                lastKeepAlive.Add(0);
+                Debug.Log("Connecting to server...");
+                entitySpawner = new EntitySpawner();
             }
         }
 
         protected override void OnDestroy()
         {
-            Debug.LogError("disconected from the server");
-            ClientJobHandle.Complete();
+            Debug.Log("disconected from the server");
             driver.Dispose();
-            lastKeepAlive.Dispose();
         }
 
         protected override void OnUpdate()
         {
-            ClientJobHandle.Complete();
-
-            var updateMessagePumpJob = new UpdateMessagePumpJob
-            {
-                driver = driver,
-                server = server,
-                done = done
-            };
-
-            var keepAliveJob = new KeepAliveJob
-            {
-                driver = driver,
-                server = server,
-                lastKeepAlive = lastKeepAlive,
-                keepAliveDelay = keepAliveDelay,
-                currentTime = (float)Time.ElapsedTime
-            };
-
-            ClientJobHandle = driver.ScheduleUpdate();
-            ClientJobHandle = updateMessagePumpJob.Schedule(ClientJobHandle);
-            ClientJobHandle = keepAliveJob.Schedule(ClientJobHandle);
+            driver.ScheduleUpdate().Complete();
+            currentTime = (float)Time.ElapsedTime;
+            UpdateMessagePump();
+            CheckAlive();
         }
-    }
 
-    struct UpdateMessagePumpJob : IJob
-    {
-        public NetworkDriver driver;
-        public NetworkConnection server;
-        public byte done;
-
-        public void Execute()
+        private void UpdateMessagePump()
         {
-            if (!server.IsCreated)
-            {
-                if (done != 1)
-                    Debug.Log("Something went wrong during connect, IsCreated: " + server.IsCreated + " done: " + done);
-                return;
-            }
-
             DataStreamReader stream;
-            NetworkEvent.Type cmd;
 
+            NetworkEvent.Type cmd;
             while ((cmd = server.PopEvent(driver, out stream)) != NetworkEvent.Type.Empty)
             {
                 if (cmd == NetworkEvent.Type.Connect)
                 {
-                    connected();
+                    Debug.Log("We are now connected to the server");
+                    entitySpawner.CreateServerEntity();
                 }
                 else if (cmd == NetworkEvent.Type.Data)
                 {
@@ -108,26 +83,18 @@ namespace Client
                 }
                 else if (cmd == NetworkEvent.Type.Disconnect)
                 {
-                    disconnected();
+                    Debug.Log("Client got disconnected from server");
+                    server = default(NetworkConnection);
                 }
             }
         }
 
-        void connected()
-        {
-            Debug.Log("We are now connected to the server");
-        }
-
-        void disconnected()
-        {
-            Debug.Log("Client got disconnected from server");
-            server = default(NetworkConnection);
-        }
-
         void NetworkMessages(ref DataStreamReader stream)
         {
-            byte networkMessageCode = stream.ReadByte();
+            lastKeepAliveResponseTime = currentTime;
+            UpdateTimeToSendKeepAliveRequest(keepAliveDelay);
 
+            byte networkMessageCode = stream.ReadByte();
             switch (networkMessageCode)
             {
                 case (byte)NetworkMessageCode.KeepAlive:
@@ -135,41 +102,44 @@ namespace Client
                     break;
             }
         }
-    }
 
-
-    struct KeepAliveJob : IJob
-    {
-        public NetworkDriver driver;
-        public NetworkConnection server;
-        public NativeList<float> lastKeepAlive;
-        public int keepAliveDelay;
-        public float currentTime;
-        public byte done;
-
-        public void Execute()
+        private void CheckAlive()
         {
             if (!server.IsCreated)
             {
-                if (done != 1)
-                    Debug.Log("Something went wrong during connect, IsCreated: " + server.IsCreated + " done: " + done);
+                Debug.LogError("Something went wrong, lost connection to server");
                 return;
             }
 
-            keepAlive();
+            SendKeepAlive();
+
+            if (waitingKeepAliveResponse && currentTime >= lastKeepAliveRequestTime + KeepAliveRetryDelay)
+            {
+                UpdateTimeToSendKeepAliveRequest(KeepAliveRetryDelay);
+            }
+
         }
 
-        void keepAlive()
+        private void SendKeepAlive()
         {
-            if (lastKeepAlive[0] + keepAliveDelay <= currentTime)
-            {
-                lastKeepAlive[0] = currentTime;
 
+            if (!waitingKeepAliveResponse && currentTime >= timeToSendKeepAliveRequest)
+            {
+                Debug.Log("sending keep alive to server at " + currentTime);
                 DataStreamWriter writer;
                 driver.BeginSend(server, out writer);
                 writer.WriteByte((byte)NetworkMessageCode.KeepAlive);
                 driver.EndSend(writer);
+
+                lastKeepAliveRequestTime = currentTime;
+                waitingKeepAliveResponse = true;
             }
+        }
+
+        void UpdateTimeToSendKeepAliveRequest(float time)
+        {
+            timeToSendKeepAliveRequest += time;
+            waitingKeepAliveResponse = false;
         }
     }
 }
