@@ -86,7 +86,6 @@ namespace Server
     {
         public NetworkDriver driver;
         public NativeList<NetworkConnection> connections;
-        //public NativeList<float> lastKeepAlives;
         public float currentTime;
 
         public void Execute()
@@ -102,7 +101,6 @@ namespace Server
                 if (!connections[i].IsCreated)
                 {
                     connections.RemoveAtSwapBack(i);
-                    //lastKeepAlives.RemoveAtSwapBack(i);
                     --i;
                 }
             }
@@ -115,7 +113,6 @@ namespace Server
             while ((c = driver.Accept()) != default(NetworkConnection))
             {
                 connections.Add(c);
-                //lastKeepAlives.Add(currentTime);
                 Debug.LogWarning("Accepted a connection");
             }
         }
@@ -128,7 +125,6 @@ namespace Server
 
         public NetworkDriver.Concurrent driver;
         public NativeArray<NetworkConnection> connections;
-        //public NativeArray<float> lastKeepAlives;
 
         public void Execute(int index)
         {
