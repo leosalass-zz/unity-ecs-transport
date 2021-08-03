@@ -17,6 +17,8 @@ namespace Server
 
         private JobHandle ServerJobHandle;
 
+        EntityCommandBufferSystem Barrier => World.GetOrCreateSystem<EndSimulationEntityCommandBufferSystem>();
+
         protected override void OnCreate()
         {
             driver = NetworkDriver.Create();
@@ -50,6 +52,7 @@ namespace Server
             ServerJobHandle.Complete();
 
             float currentTime = (float)Time.ElapsedTime;
+            int oldConnectionsLength = connections.Length;
 
             var updateConnectionsJob = new UpdateConnectionsJob
             {
@@ -57,6 +60,10 @@ namespace Server
                 connections = connections,
                 currentTime = currentTime
             };
+
+            // Create entity for every new connection
+            var newConnections = connections.Length - oldConnectionsLength;
+            CreateEntities(newConnections);
 
             var updateMessagePumpJump = new UpdateMessagePumpJob
             {
@@ -67,6 +74,26 @@ namespace Server
             ServerJobHandle = driver.ScheduleUpdate();
             ServerJobHandle = updateConnectionsJob.Schedule(ServerJobHandle);
             ServerJobHandle = updateMessagePumpJump.Schedule(connections, 1, ServerJobHandle);
+        }
+
+        private void CreateEntities(int newConnections)
+        {
+            if (newConnections > 0)
+            {
+                for (int i = 0; i < newConnections; i++)
+                {
+                    var commandBuffer = Barrier.CreateCommandBuffer().AsParallelWriter();
+                    Entities
+                        .ForEach((Entity entity, int entityInQueryIndex, ref CharacterPrefab prefab) =>
+                        {
+                            commandBuffer.Instantiate(entityInQueryIndex, prefab.Value);
+                        })
+                        .WithName("SpawnEntity")
+                        .ScheduleParallel();
+
+                    Barrier.AddJobHandleForProducer(Dependency);
+                }
+            }
         }
 
         private bool IsPortAvailable(NetworkDriver driver, NetworkEndPoint endPoint)

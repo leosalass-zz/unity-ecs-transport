@@ -27,8 +27,7 @@ namespace Client
         private float currentTime;
         private bool waitingKeepAliveResponse;
 
-        EntitySpawner entitySpawner;
-
+        EntityCommandBufferSystem Barrier => World.GetOrCreateSystem<EndSimulationEntityCommandBufferSystem>();
         protected override void OnCreate()
         {
             driver = NetworkDriver.Create();
@@ -47,7 +46,6 @@ namespace Client
             if (driver.IsCreated)
             {
                 Debug.Log("Connecting to server...");
-                entitySpawner = new EntitySpawner();
             }
         }
 
@@ -65,6 +63,7 @@ namespace Client
             CheckAlive();
         }
 
+
         private void UpdateMessagePump()
         {
             DataStreamReader stream;
@@ -75,7 +74,7 @@ namespace Client
                 if (cmd == NetworkEvent.Type.Connect)
                 {
                     Debug.Log("We are now connected to the server");
-                    entitySpawner.CreateServerEntity();
+                    CreateEntity();
                 }
                 else if (cmd == NetworkEvent.Type.Data)
                 {
@@ -87,6 +86,24 @@ namespace Client
                     server = default(NetworkConnection);
                 }
             }
+        }
+
+        private void CreateEntity()
+        {
+            // Acquire an ECB and convert it to a concurrent one to be able
+            // to use it from a parallel job.
+            var commandBuffer = Barrier.CreateCommandBuffer().AsParallelWriter();
+
+            // Get prefab and instantiate it
+            Entities
+                .ForEach((Entity entity, int entityInQueryIndex, ref CharacterPrefab prefab) =>
+                {
+                    commandBuffer.Instantiate(entityInQueryIndex, prefab.Value);
+                })
+                .ScheduleParallel();
+
+            // Make sure that the ECB system knows about our job
+            Barrier.AddJobHandleForProducer(Dependency);
         }
 
         void NetworkMessages(ref DataStreamReader stream)
